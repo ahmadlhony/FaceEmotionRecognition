@@ -1,32 +1,43 @@
 import os
+import random
+
 import streamlit as st
 from deepface import DeepFace
 import face_recognition
 import cv2
 import numpy as np
-# Get a reference to webcam #0 (the default one)
+from utility.sqlite_db import FaceEmotionDB
+
 video_capture = cv2.VideoCapture(0)
 
-# Create arrays of known face encodings and their names
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = '0'
+db = FaceEmotionDB()
 known_face_encodings = []
 known_face_names = []
+known_face_ids = []
+
+face_data = db.fetch_all_face_data()
 
 face_paths = 'faces'
-for i in os.listdir(face_paths):
-    print(i)
-    face_path = os.path.join(face_paths, i)
-    image = face_recognition.load_image_file(face_path)
-    face_encoding = face_recognition.face_encodings(image)[0]
-    known_face_encodings.append(face_encoding)
-    name = i.split('.')[0]
-    known_face_names.append(name)
-    print(name)
+emotions_paths = 'emotions'
+
+for face_id, name, face_path in face_data:
+    full_path = os.path.join('faces', face_path)
+    if os.path.isfile(full_path):
+        image = face_recognition.load_image_file(full_path)
+        # Check if at least one face is found in the image
+        if face_recognition.face_encodings(image):
+            face_encoding = face_recognition.face_encodings(image)[0]
+            known_face_encodings.append(face_encoding)
+            known_face_names.append(name)
+            known_face_ids.append(face_id)
 
 print('FRAME')
+temp_emotion_label = ''
+temp_face_id = ''
 while True:
     # Grab a single frame of video
     ret, frame = video_capture.read()
-
 
     # Convert the image from BGR color (which OpenCV uses) to RGB color (which face_recognition uses)
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -41,8 +52,7 @@ while True:
         matches = face_recognition.compare_faces(known_face_encodings, face_encoding, 0.5)
 
         name = "Unknown"
-        print(f'{top}, {right}, {bottom}, {left}')
-
+        face_id = -1
         # If a match was found in known_face_encodings, just use the first one.
         # if True in matches:
         #     first_match_index = matches.index(True)
@@ -53,12 +63,52 @@ while True:
         best_match_index = np.argmin(face_distances)
         if matches[best_match_index]:
             name = known_face_names[best_match_index]
+            face_id = known_face_ids[best_match_index]
+        else:
+            image_id = random.randint(0, 999999)
+            image_name = str(image_id) + '_' + name + '.jpg'
+            cv2.imwrite(os.path.join('faces', image_name), frame)
+            face_id = db.insert_face_unknown({
+                'x1': right,
+                'y1': top,
+                'x2': left,
+                'y2': bottom,
+                'image_path': image_name
+            })
+            name = f'unknown_{face_id}'
+            known_face_encodings.append(face_encoding)
+            known_face_ids.append(face_id)
+            known_face_names.append(name)
 
         # emotion
         face_roi = frame[top:bottom, left:right]
         emotions = DeepFace.analyze(face_roi, actions=['emotion'], enforce_detection=False)
         print(emotions)
         emotion_label = emotions[0]['dominant_emotion']
+        if emotion_label != temp_emotion_label or face_id != temp_face_id:
+            emotion_confidences = emotions[0]['emotion']
+            image_id = random.randint(0, 999999)
+            image_name = str(image_id) + '_' + str(name).replace(' ', '-') + '_' + str(emotion_label) + '.jpg'
+            image_path = os.path.join('emotions', image_name)
+            cv2.imwrite(image_path, frame)
+            db.insert_emotion({
+                'x1': right,
+                'y1': top,
+                'x2': left,
+                'y2': bottom,
+                'image_path': image_name,
+                'face_id': face_id,
+                'angry_conf': int(emotion_confidences['angry']),
+                'disgust_conf': int(emotion_confidences['disgust']),
+                'fear_conf': int(emotion_confidences['fear']),
+                'happy_conf': int(emotion_confidences['happy']),
+                'sad_conf': int(emotion_confidences['sad']),
+                'surprise_conf': int(emotion_confidences['surprise']),
+                'neutral_conf': int(emotion_confidences['neutral']),
+                'dominant_emotion': emotion_label,
+            })
+        temp_face_id = face_id
+        temp_emotion_label = emotion_label
 
         cv2.putText(frame, emotion_label, (right, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
 

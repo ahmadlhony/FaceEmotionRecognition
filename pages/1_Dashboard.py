@@ -3,18 +3,39 @@ import pandas as pd
 import streamlit as st
 from PIL import Image
 
+from utility.sqlite_db import FaceEmotionDB
+
+db = FaceEmotionDB()
 
 # Function to load images from a directory
-def load_images(directory):
+# Function to load images and emotion data from the database
+def load_images_and_emotions_from_db():
+    emotion_data = db.fetch_all_emotion_data()
     images = []
     image_names = []
+    person_names = []
+    emotions = []
+    confidences = []
 
-    for filename in os.listdir(directory):
-        if filename.endswith(('.jpg', '.jpeg', '.png')):
-            images.append(Image.open(os.path.join(directory, filename)))
-            image_names.append(filename)
+    for name, emotion, angry_conf, fear_conf, neutral_conf, sad_conf, disgust_conf, happy_conf, surprise_conf, image_path in emotion_data:
+        try:
+            images.append(Image.open(os.path.join('emotions', image_path)))
+            image_names.append(image_path)
+            person_names.append(name)
+            emotions.append(emotion)
+            confidences.append({
+                'Angry': angry_conf,
+                'Fear': fear_conf,
+                'Neutral': neutral_conf,
+                'Sad': sad_conf,
+                'Disgust': disgust_conf,
+                'Happy': happy_conf,
+                'Surprise': surprise_conf
+            })
+        except IOError:
+            continue  # Skip if the image file is not found
 
-    return images, image_names
+    return images, image_names, person_names, emotions, confidences
 
 
 # Function to filter data based on emotion and person-name
@@ -40,27 +61,28 @@ def display_data_table(data, page_size=3):
     start_idx = (page - 1) * items_per_page
     end_idx = start_idx + items_per_page
 
-    # Display images in the table
+    # Display images and data in the table
     for index, row in data.iloc[start_idx:end_idx].iterrows():
         # Create two columns: one for data and one for the image
-        col1, col2 = st.columns([1, 1])
+        col1, col2 = st.columns([3, 1])
 
         # Display data in the first column
-        col1.table(row[[ 'Person Name', 'Emotion']].to_frame().T)
+        data_table = pd.DataFrame({
+            'Person Name': [row['Person Name']],
+            'Emotion': [row['Emotion']],
+            **{k: [v] for k, v in row['Confidences'].items()}  # Expand confidence scores
+        })
+        col1.table(data_table)
 
-        # Display larger image in the second column when a row is clicked
+        # Display larger image in the second column
         col2.image(row['Image'], caption=row['Image Name'], use_column_width=True)
 
 
 st.title("Emotions Data Table")
 
-# Load images and create a DataFrame
-images, image_names = load_images('emotions')
-data = pd.DataFrame({'Image': images, 'Image Name': image_names})
-
-# Extract emotion and person-name from image names
-data['Emotion'] = data['Image Name'].apply(lambda x: x.split('_')[2].split('.')[0])
-data['Person Name'] = data['Image Name'].apply(lambda x: x.split('_')[1])
+# Load images and emotions data
+images, image_names, person_names, emotions, confidences = load_images_and_emotions_from_db()
+data = pd.DataFrame({'Image': images, 'Image Name': image_names, 'Person Name': person_names, 'Emotion': emotions, 'Confidences': confidences})
 
 # Filter options
 emotion_filter = st.sidebar.selectbox('Filter by Emotion', ['', *data['Emotion'].unique()])
@@ -74,3 +96,6 @@ if filtered_data.empty:
     st.warning("No data found with the given filters.")
 else:
     display_data_table(filtered_data)
+
+# Close the database connection
+db.close()
