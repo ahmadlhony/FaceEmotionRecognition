@@ -1,2 +1,0 @@
-code = marshal.loads(raw_code)
-ValueError: bad marshal data (unknown type code)
